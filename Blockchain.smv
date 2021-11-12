@@ -1,0 +1,56 @@
+MODULE client(env,init_balance)
+  VAR
+    balance : 0..env.INT_MAX;
+    data : word[64];
+
+  ASSIGN
+    init(balance) := init_balance;
+    init(data) := 0uh64_0;
+
+  TRANS !will_move -> conserve;
+
+  DEFINE 
+    conserve := (next(balance) = balance)
+             &  (next(data) = 0h64_0);
+
+MODULE transaction(env,cond,snder,rcver,
+                   amount,data)
+    VAR fired : boolean;
+
+    ASSIGN
+      init(fired) := FALSE;
+      next(fired) := case
+        trigger : TRUE;
+        !next(cond) : FALSE;
+        TRUE : fired;
+        esac;
+
+    TRANS trigger -> (next(snder.data)=0h64_0)
+&   (next(snder.balance) = snder.balance - amount)
+&   (next(rcver.data) = resize(data,64))
+&   (next(rcver.balance) = rcver.balance + amount);
+
+    DEFINE trigger := (!fired & cond
+&   (snder.balance >= amount)
+&   (env.INT_MAX - amount >= rcver.balance));
+
+MODULE main
+  VAR 
+    _amount : 0..INT_MAX;
+    _data : word[64];
+    _cond1 : boolean;
+    _cond2 : boolean;
+    c1 : client(self,10);
+    c2 : client(self,10);
+    tx1 : transaction(self,_cond1 &
+          !_cond2,c1,c2,_amount,_data);
+    tx2 : transaction(self,_cond2 &
+          !_cond1,c2,c1,_amount,_data);   
+
+  DEFINE
+    INT_MAX := 10;
+    c1.will_move := tx1.trigger | tx2.trigger;
+    c2.will_move := tx1.trigger | tx2.trigger;
+
+SPEC AG (c1.balance + c2.balance = 20);
+

@@ -1,0 +1,264 @@
+-- A minimalist model of Blockchain
+MODULE client(env,init_balance)
+  VAR
+    balance : 0..env.INT_MAX;
+    data : word[64];
+
+  ASSIGN
+    init(balance) := init_balance;
+    init(data) := 0uh64_0;
+
+  TRANS !will_move -> conserve;
+
+  DEFINE 
+    conserve := (next(balance) = balance)
+             &  (next(data) = 0h64_0);
+           
+MODULE transaction(env,cond,snder,rcver,
+                   amount,data)
+    VAR fired : boolean;
+
+    ASSIGN
+      init(fired) := FALSE;
+      next(fired) := case
+        trigger : TRUE;
+        !next(cond) : FALSE;
+        TRUE : fired;
+        esac;
+
+    TRANS trigger -> (next(snder.data)=0h64_0)
+&   (next(snder.balance) = snder.balance - amount)
+&   (next(rcver.data) = resize(data,64))
+&   (next(rcver.balance) = rcver.balance + amount);
+
+    DEFINE trigger := (!fired & cond
+&   (snder.balance >= amount)
+&   (env.INT_MAX - amount >= rcver.balance));
+
+MODULE Algorithm(env) 
+  VAR 
+    cl : client(env,0);
+    buyAmount1 : word[8];
+    buyAmount2 : word[8];
+    sellAmount : word[8];
+    complete1 : transaction(env,cond_complete1,
+self.c1,env.market.c1,0,
+0uh32_70ea0793::0h8_1::0h8_1::to_buy1::price1);
+    complete2 : transaction(env,cond_complete2,
+self.c1,env.market.c1,0,
+0uh32_70ea0793::0h8_1::0h8_2::to_buy2::price2);
+
+  ASSIGN
+    init(buyAmount1) := 0h8_0;
+    next(buyAmount1) := case
+  next(call_run) : next(env.market.buyOrder[1]);
+  TRUE : buyAmount1;
+  esac;
+    init(buyAmount2) := 0h8_0;
+    next(buyAmount2) := case
+  next(call_run) : next(env.market.buyOrder[2]);
+  TRUE : buyAmount2;
+  esac;
+    init(sellAmount) := 0h8_0;
+    next(sellAmount) := case
+  next(call_run) : next(env.market.sellOrder[1]);
+  TRUE : sellAmount;
+  esac;
+
+    DEFINE
+      call_run := (c1.data = 0h64_83628047);
+      to_buy1 := 
+  buyAmount1 + buyAmount2 >= sellAmount ? 
+  (sellAmount*buyAmount1)/(buyAmount1+buyAmount2):
+  buyAmount1;
+      to_buy2 := 
+  buyAmount1 + buyAmount2 >= sellAmount ? 
+  (sellAmount*buyAmount2)/(buyAmount1+buyAmount2):
+  buyAmount2;
+      price1 := to_buy1*env.pricePerEnergyUnit;
+      price2 := to_buy2*env.pricePerEnergyUnit;
+      cond_complete1 := call_run;
+      cond_complete2 := complete1.fired;
+
+MODULE ETP_Market(env)
+  VAR 
+    -- cl : account(env,0);
+    cl : Account(env,0);
+    completeBob : transaction(env,
+cond_completeBob,self.cl,env.Bob.cl,
+0,0uh40_70ea0793::seller_meter::price);
+    completeClaude : transaction(env,
+cond_completeClaude,self.cl,env.Claude.cl,
+0,0uh40_70ea0793::seller_meter::price);
+    transferFromMarket : transaction(env,
+cond_transferFrom,self.cl,env.registry.cl,
+0,0uh40_16c5407d::buyer_meter::amount);
+ 
+  DEFINE
+    call_complete := marketOpen & 
+(cl.data[63:32] = 0h_70ea0793);
+    seller := call_complete ? 
+c1.data[31:24] : 0h8_0;
+    buyer := call_complete ? 
+c1.data[23:16] : 0h8_0;
+    amount := call_complete ?
+c1.data[15:8] : 0h8_0;
+    price := call_complete ?
+c1.data[7:0] : 0h8_0;
+    seller_meter := env.Alice_meter;
+    buyer_meter := case
+cond_completeBob.fired : env.Bob_meter;
+cond_completeClaude : env.Claude_meter;
+TRUE : 0H16_0;
+esac;
+    cond_completeBob := call_complete &
+buyer = 0h8_1;
+    cond_completeClaude := call_complete &
+buyer = 0h8_2;
+    cond_transferFrom :=
+env.Bob.payAlice.trigger |
+env.Claude.payAlice.trigger;
+  
+MODULE Account(env,init_balance)
+  VAR 
+    cl : client(env,init_balance);
+    payAlice : transaction(env,cond_payAlice,
+self.cl,env.Alice.cl,_price,0uh64_0);
+
+  DEFINE
+    call_complete := (cl.data[55:24]=0h_70ea0793);
+    sellerId := call_complete ?
+cl.data[15:0] : 0h16_0;
+    price := call_complete ?
+c1.data[23:16] : 0h8_0;
+    _price := toint(price);
+    cond_payAlice := call_complete &
+(sellerId = env.Alice_meter);
+
+MODULE ETP_Registry(env)
+  VAR 
+    -- ac : account(env,0);
+    ac : Account(env,0);
+    billOfBob : 0..env.INT_MAX;
+    billOfClaude : 0..env.INT_MAX;
+  
+  ASSIGN
+    init(billOfBob) := 0;
+    next(billOfBob) := case
+next((buyer_meter = env.Bob_meter)) &
+(!billOfBob + next(_amount) <= env.INT_MAX) :
+billOfBob + next(_amount);
+TRUE : billOfBob;
+esac;
+-- similar assignments here for billOfClaude
+
+  DEFINE
+    call_transferFromMarket :=
+(ac.data[39:8] = 0uh40_16c5407d);
+    buyer_meter := call_transferFromMarket ?
+ac.data[23:8] : 0h16_0;
+    amount := call_transferFromMarket ?
+ac.data[7:0] : 0h8_0;
+    _amount := toint(amount);
+
+MODULE main
+  FROZENVAR
+    Alice_meter : word[64];
+    Bob_meter : word[64];
+    Claude_meter : word[64];
+    export_Alice : word[4];
+    import_Bob : word[4];
+    import_Claude : word[4];
+
+  VAR 
+    -- instantiation of clients:
+    -- market : Market(self);
+    market : ETP_Market(self);
+    -- registry : Registry(self);
+    registry : ETP_Registry(self);
+    algo : Algorithm(self);
+    Alice : Account(self,AliceInitBalance);
+    Bob : Account(self,BobInitBalance);
+    Claude : Account(self,ClaudeInitBalance);
+    oracle : client(self,0); --external client
+
+    stepper : {s1,s2a,s2b,s2c,s3,s4,end};
+
+    -- instantiation of initiator transactions:
+    -- calling of method 'openMarket'
+    step1 : transaction(self,stepper=s1,
+oracle,market.c1,0,0uh64_35caf43f);
+    -- calling of 'recordImportsAndExports'
+    -- method with its parameters: 'meterId',
+    -- 'imports' and 'exports' (3 times)
+    step2a : transaction(self,stepper=s2a,
+oracle,registry.cl,0,0uh32_35c768a1::
+Alice_meter::0uh8_0::extend(export_Alice,64));
+    step2b : transaction(self,stepper=s2b,
+oracle,registry.cl,0,0uh32_35c768a1::
+Bob_meter::extend(import_Bob,64)::0uh8_0);
+    step2c : transaction(self,stepper=s2c,
+oracle,registry.cl,0,0uh32_35c768a1::
+Claude_meter::extend(import_Claude,64)::0uh8_0);
+    -- calling of 'run' method
+    step3 : transaction(self,stepper=s3,
+oracle,algo.c1,0,0uh64_83628047);
+    -- calling of 'closeMarket' method
+    step4 : transaction(self,stepper=s4,
+oracle,market.c1,0,0uh64_6e155755);
+
+  ASSIGN
+    init(stepper) := s1;
+    next(stepper) := case
+step1.trigger : s2a;
+market.transferFromMarket.trigger : s2b;
+Bob.buy.trigger : s2c;
+Claude.buy.trigger : s3;
+market.transferFromMarket.trigger : s4;
+step4.trigger : end;
+TRUE : stepper;
+esac;
+
+  DEFINE 
+    INT_MAX := toint(0uh_ff);
+AliceInitBalance := 0;
+BobInitBalance := 100;
+ClaudeInitBalance := 100;
+pricePerEnergyUnit := 0d8_10;
+
+    -- Definition of will_move variables
+    -- just necessary for this illustration:
+    market.c1.will_move :=
+step1.trigger |
+step5.trigger |
+market.transferFromMarket.trigger |
+algo.complete1.trigger |
+algo.complete2.trigger |
+market.completeBob.trigger |
+market.completeClaude.trigger;
+    registry.cl.will_move :=
+step3a.trigger |
+step3b.trigger |
+step3c.trigger |
+market.transferFromMarket.trigger;
+    algo.cl.will_move :=
+step4.trigger |
+algo.complete1.trigger |
+algo.complete2.trigger;
+    Alice.cl.will_move :=
+Bob.pay.trigger |
+Claude.pay.trigger;
+    Bob.cl.will_move :=
+market.completeBob.trigger |
+Bob.pay.trigger;
+    Claude.cl.will_move :=
+market.completeClaude.trigger |
+Claude.pay.trigger;    
+    oracle.will_move :=
+step1.trigger |
+step3a.trigger |
+step3b.trigger |
+step3c.trigger |
+step4.trigger |
+step5.trigger;
+   
